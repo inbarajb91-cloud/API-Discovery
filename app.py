@@ -86,12 +86,18 @@ if "button_answer" not in st.session_state:
 with st.sidebar:
     st.title("⚙️ Configuration")
 
-    # API Key
+    # API Key - try Streamlit Cloud secrets first, then env var
+    default_key = ""
+    try:
+        default_key = st.secrets["ANTHROPIC_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        default_key = os.getenv("ANTHROPIC_API_KEY", "")
+
     api_key = st.text_input(
         "Anthropic API Key",
-        value=os.getenv("ANTHROPIC_API_KEY", ""),
+        value=default_key,
         type="password",
-        help="Enter your Anthropic API key or set ANTHROPIC_API_KEY env var",
+        help="Enter your Anthropic API key, or set it in Streamlit Cloud Secrets",
     )
 
     st.divider()
