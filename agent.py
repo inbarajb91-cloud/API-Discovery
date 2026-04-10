@@ -40,13 +40,22 @@ def run_agent_turn(user_message: str, conversation_history: list, api_key: str) 
 
     for iteration in range(MAX_TOOL_LOOPS):
         # Call Claude
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=conversation_history,
-        )
+        try:
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                system=SYSTEM_PROMPT,
+                tools=TOOLS,
+                messages=conversation_history,
+            )
+        except anthropic.AuthenticationError:
+            events.append({"type": "text", "content": "**Authentication Error**: Your API key is invalid. Please check that you've entered a valid Anthropic API key starting with `sk-ant-`. You can get one from [console.anthropic.com](https://console.anthropic.com/)."})
+            conversation_history.pop()  # remove the user message we just added
+            return events
+        except anthropic.APIError as e:
+            events.append({"type": "text", "content": f"**API Error**: {str(e)}"})
+            conversation_history.pop()
+            return events
 
         # Process each content block
         assistant_content = response.content

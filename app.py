@@ -99,6 +99,14 @@ with st.sidebar:
         type="password",
         help="Enter your Anthropic API key, or set it in Streamlit Cloud Secrets",
     )
+    # Strip whitespace from copy-paste
+    api_key = api_key.strip() if api_key else ""
+
+    # Validate key format
+    if api_key and not api_key.startswith("sk-ant-"):
+        st.warning("Key should start with 'sk-ant-'. Please check your API key.")
+    elif api_key:
+        st.success(f"Key loaded ({api_key[:10]}...)")
 
     st.divider()
 
