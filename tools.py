@@ -634,7 +634,7 @@ def _discover_api_spec(params: dict) -> str:
 # Tool 10: scrape_documentation
 # ---------------------------------------------------------------------------
 def _scrape_documentation(params: dict) -> str:
-    """Fetch and extract text from an API documentation webpage."""
+    """Fetch and extract text from an API documentation webpage using Jina Reader."""
     url = params.get("url", "").strip()
     extract_links = params.get("extract_links", False)
 
@@ -644,71 +644,40 @@ def _scrape_documentation(params: dict) -> str:
     if not url.startswith("http"):
         url = f"https://{url}"
 
+    # Use Jina Reader API — renders JavaScript, bypasses bot protection, returns clean markdown
+    jina_url = f"https://r.jina.ai/{url}"
+
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "Accept": "text/markdown",
+            "X-Return-Format": "markdown",
         }
-        resp = requests.get(url, timeout=15, headers=headers, allow_redirects=True)
+        if extract_links:
+            headers["X-With-Links"] = "true"
+
+        resp = requests.get(jina_url, timeout=30, headers=headers)
         resp.raise_for_status()
+        content = resp.text
     except Exception as e:
-        return f"Error fetching {url}: {str(e)}"
+        # Fallback to direct requests + BeautifulSoup if Jina fails
+        try:
+            resp = requests.get(url, timeout=15, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            })
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "footer", "noscript"]):
+                tag.decompose()
+            main = soup.find("main") or soup.find("article") or soup.body or soup
+            content = main.get_text(separator="\n", strip=True)
+        except Exception as e2:
+            return f"Error fetching {url}: Jina failed ({str(e)}), direct fetch also failed ({str(e2)})"
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    # Truncate to ~5000 chars for Claude context
+    if len(content) > 5000:
+        content = content[:5000] + "\n\n[... content truncated, scrape more specific pages for details]"
 
-    # Remove script, style, nav, footer elements
-    for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
-        tag.decompose()
-
-    # Extract main content
-    # Try to find main content area first
-    main = soup.find("main") or soup.find("article") or soup.find(attrs={"role": "main"}) or soup.find("div", class_=re.compile(r"content|docs|api|main", re.I))
-    if not main:
-        main = soup.body or soup
-
-    # Extract text with structure
-    lines = []
-    for elem in main.find_all(["h1", "h2", "h3", "h4", "p", "li", "pre", "code", "td", "th", "dt", "dd"]):
-        text = elem.get_text(strip=True)
-        if not text:
-            continue
-        if elem.name in ("h1", "h2", "h3", "h4"):
-            lines.append(f"\n{'#' * int(elem.name[1])} {text}\n")
-        elif elem.name == "pre" or elem.name == "code":
-            if len(text) > 10:  # skip tiny code fragments
-                lines.append(f"```\n{text[:500]}\n```")
-        elif elem.name in ("li", "dt"):
-            lines.append(f"  - {text}")
-        elif elem.name in ("td", "th"):
-            lines.append(f"| {text} ")
-        else:
-            lines.append(text)
-
-    content = "\n".join(lines)
-
-    # Truncate to ~4000 chars for Claude context
-    if len(content) > 4000:
-        content = content[:4000] + "\n\n[... content truncated, use scrape_documentation on more specific pages for full details]"
-
-    result = f"Documentation from {url}:\n\n{content}"
-
-    # Extract links if requested
-    if extract_links:
-        links = []
-        for a in main.find_all("a", href=True):
-            href = a["href"]
-            link_text = a.get_text(strip=True)
-            if link_text and href and not href.startswith("#") and not href.startswith("javascript"):
-                # Make relative URLs absolute
-                if href.startswith("/"):
-                    from urllib.parse import urlparse
-                    parsed = urlparse(url)
-                    href = f"{parsed.scheme}://{parsed.netloc}{href}"
-                links.append(f"  - [{link_text}]({href})")
-
-        if links:
-            result += f"\n\n---\nLinks found ({len(links)}):\n" + "\n".join(links[:30])
-
-    return result
+    return f"Documentation from {url}:\n\n{content}"
 
 
 # ---------------------------------------------------------------------------
