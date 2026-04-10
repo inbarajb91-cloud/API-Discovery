@@ -244,5 +244,55 @@ TOOLS = [
             },
             "required": ["report_data"]
         }
+    },
+    {
+        "name": "discover_api_spec",
+        "description": "Auto-discover an OpenAPI/Swagger specification by probing common documentation paths on a base URL. Tries paths like /openapi.json, /swagger.json, /api-docs, /v2/api-docs, /docs/api, etc. Use this when you know the system's base URL but not the exact spec location.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "base_url": {
+                    "type": "string",
+                    "description": "Base URL of the target system (e.g., 'https://api.example.com' or 'https://example.com')"
+                }
+            },
+            "required": ["base_url"]
+        }
+    },
+    {
+        "name": "scrape_documentation",
+        "description": "Fetch and extract text content from an API documentation webpage. Strips HTML and returns readable text content including headings, paragraphs, code blocks, and tables. Use this to read human-readable API docs when no OpenAPI spec is available.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL of the documentation page to scrape (e.g., 'https://docs.stripe.com/api/charges')"
+                },
+                "extract_links": {
+                    "type": "boolean",
+                    "description": "If true, also extract and return all links found on the page (useful for navigating docs). Default: false."
+                }
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "web_search",
+        "description": "Search the web for API documentation, OpenAPI specs, or integration guides. Uses DuckDuckGo search. Use this when the user mentions a system name but you don't know where its docs are. Search for things like 'Facilio API documentation' or 'Shopify REST API OpenAPI spec'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query (e.g., 'Facilio API documentation', 'Shopify OpenAPI spec URL', 'Salesforce REST API endpoints')"
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return (default: 5, max: 10)"
+                }
+            },
+            "required": ["query"]
+        }
     }
 ]

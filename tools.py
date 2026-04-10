@@ -6,8 +6,11 @@ The execute_tool() dispatcher routes tool calls from Claude to the right functio
 
 import json
 import base64
+import re
 import requests
 import yaml
+from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
 
 from config import APIS_GURU_LIST_URL
 from pdf_report import create_report
@@ -33,6 +36,9 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
         "call_api": _call_api,
         "validate_integration": _validate_integration,
         "generate_pdf_report": _generate_pdf_report,
+        "discover_api_spec": _discover_api_spec,
+        "scrape_documentation": _scrape_documentation,
+        "web_search": _web_search,
     }
     handler = handlers.get(tool_name)
     if not handler:
@@ -548,3 +554,190 @@ def _generate_pdf_report(params: dict) -> str:
         return filepath
     except Exception as e:
         return f"Error generating PDF: {str(e)}"
+
+
+# ---------------------------------------------------------------------------
+# Tool 9: discover_api_spec
+# ---------------------------------------------------------------------------
+_COMMON_SPEC_PATHS = [
+    "/openapi.json",
+    "/openapi.yaml",
+    "/swagger.json",
+    "/swagger.yaml",
+    "/api-docs",
+    "/v2/api-docs",
+    "/v3/api-docs",
+    "/api/openapi.json",
+    "/api/swagger.json",
+    "/api/v1/openapi.json",
+    "/api/v2/openapi.json",
+    "/api/v3/openapi.json",
+    "/docs/openapi.json",
+    "/api/docs",
+    "/.well-known/openapi.json",
+    "/api.json",
+    "/swagger/v1/swagger.json",
+    "/swagger/docs/v1",
+]
+
+
+def _discover_api_spec(params: dict) -> str:
+    """Try common paths to find an OpenAPI/Swagger spec on a base URL."""
+    base_url = params.get("base_url", "").strip().rstrip("/")
+    if not base_url:
+        return "Error: base_url parameter is required"
+
+    if not base_url.startswith("http"):
+        base_url = f"https://{base_url}"
+
+    found = []
+    tried = []
+
+    for path in _COMMON_SPEC_PATHS:
+        url = f"{base_url}{path}"
+        tried.append(url)
+        try:
+            resp = requests.get(url, timeout=8, allow_redirects=True)
+            if resp.status_code == 200:
+                # Check if it looks like a spec (JSON or YAML with paths/swagger/openapi key)
+                content = resp.text[:500]
+                if any(keyword in content.lower() for keyword in ['"paths"', '"swagger"', '"openapi"', "'paths'", "paths:", "swagger:", "openapi:"]):
+                    found.append({
+                        "url": url,
+                        "content_type": resp.headers.get("Content-Type", "unknown"),
+                        "size": len(resp.text),
+                    })
+        except (requests.RequestException, Exception):
+            continue
+
+    if found:
+        lines = [f"Found {len(found)} OpenAPI/Swagger spec(s):\n"]
+        for f in found:
+            lines.append(f"  URL: {f['url']}")
+            lines.append(f"  Content-Type: {f['content_type']}")
+            lines.append(f"  Size: {f['size']} bytes")
+            lines.append("")
+        lines.append("Use fetch_openapi_spec with the URL above to parse the spec.")
+        return "\n".join(lines)
+    else:
+        return (
+            f"No OpenAPI/Swagger spec found at {base_url}.\n"
+            f"Tried {len(tried)} common paths.\n\n"
+            f"Suggestions:\n"
+            f"  - Use web_search to find the documentation URL\n"
+            f"  - Use scrape_documentation to read their developer docs\n"
+            f"  - Ask the user for the spec URL directly"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tool 10: scrape_documentation
+# ---------------------------------------------------------------------------
+def _scrape_documentation(params: dict) -> str:
+    """Fetch and extract text from an API documentation webpage."""
+    url = params.get("url", "").strip()
+    extract_links = params.get("extract_links", False)
+
+    if not url:
+        return "Error: url parameter is required"
+
+    if not url.startswith("http"):
+        url = f"https://{url}"
+
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        resp = requests.get(url, timeout=15, headers=headers, allow_redirects=True)
+        resp.raise_for_status()
+    except Exception as e:
+        return f"Error fetching {url}: {str(e)}"
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Remove script, style, nav, footer elements
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+        tag.decompose()
+
+    # Extract main content
+    # Try to find main content area first
+    main = soup.find("main") or soup.find("article") or soup.find(attrs={"role": "main"}) or soup.find("div", class_=re.compile(r"content|docs|api|main", re.I))
+    if not main:
+        main = soup.body or soup
+
+    # Extract text with structure
+    lines = []
+    for elem in main.find_all(["h1", "h2", "h3", "h4", "p", "li", "pre", "code", "td", "th", "dt", "dd"]):
+        text = elem.get_text(strip=True)
+        if not text:
+            continue
+        if elem.name in ("h1", "h2", "h3", "h4"):
+            lines.append(f"\n{'#' * int(elem.name[1])} {text}\n")
+        elif elem.name == "pre" or elem.name == "code":
+            if len(text) > 10:  # skip tiny code fragments
+                lines.append(f"```\n{text[:500]}\n```")
+        elif elem.name in ("li", "dt"):
+            lines.append(f"  - {text}")
+        elif elem.name in ("td", "th"):
+            lines.append(f"| {text} ")
+        else:
+            lines.append(text)
+
+    content = "\n".join(lines)
+
+    # Truncate to ~4000 chars for Claude context
+    if len(content) > 4000:
+        content = content[:4000] + "\n\n[... content truncated, use scrape_documentation on more specific pages for full details]"
+
+    result = f"Documentation from {url}:\n\n{content}"
+
+    # Extract links if requested
+    if extract_links:
+        links = []
+        for a in main.find_all("a", href=True):
+            href = a["href"]
+            link_text = a.get_text(strip=True)
+            if link_text and href and not href.startswith("#") and not href.startswith("javascript"):
+                # Make relative URLs absolute
+                if href.startswith("/"):
+                    from urllib.parse import urlparse
+                    parsed = urlparse(url)
+                    href = f"{parsed.scheme}://{parsed.netloc}{href}"
+                links.append(f"  - [{link_text}]({href})")
+
+        if links:
+            result += f"\n\n---\nLinks found ({len(links)}):\n" + "\n".join(links[:30])
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Tool 11: web_search
+# ---------------------------------------------------------------------------
+def _web_search(params: dict) -> str:
+    """Search the web for API documentation using DuckDuckGo."""
+    query = params.get("query", "").strip()
+    max_results = min(params.get("max_results", 5), 10)
+
+    if not query:
+        return "Error: query parameter is required"
+
+    try:
+        results = DDGS().text(query, max_results=max_results)
+    except Exception as e:
+        return f"Error searching: {str(e)}"
+
+    if not results:
+        return f"No results found for '{query}'."
+
+    lines = [f"Search results for '{query}':\n"]
+    for i, r in enumerate(results, 1):
+        lines.append(f"  {i}. {r.get('title', 'No title')}")
+        lines.append(f"     URL: {r.get('href', 'No URL')}")
+        body = r.get("body", "")
+        if body:
+            lines.append(f"     {body[:150]}")
+        lines.append("")
+
+    lines.append("Use scrape_documentation to read any of these pages, or fetch_openapi_spec if a URL points to a spec file.")
+    return "\n".join(lines)
