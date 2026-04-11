@@ -42,37 +42,75 @@ st.markdown("""
 # Helpers
 # ---------------------------------------------------------------------------
 def extract_clickable_options(text: str) -> list[str]:
-    """Extract bullet-point options from agent text for rendering as buttons.
-
-    Detects patterns like:
-      - Option text here?
-      ○ Option text here?
-      * Option text here
-    """
+    """Extract bullet-point options from agent text for rendering as buttons."""
     options = []
     for line in text.split("\n"):
         stripped = line.strip()
-        # Match common bullet patterns
         match = re.match(r'^[\-\*○●◦▸►•]\s+(.+)$', stripped)
         if match:
-            opt = match.group(1).strip().rstrip("?").strip()
-            if len(opt) > 5 and len(opt) < 120:  # Skip very short or long lines
-                options.append(match.group(1).strip())
+            opt = match.group(1).strip()
+            if len(opt) > 5 and len(opt) < 120:
+                options.append(opt)
     return options
 
 
+def parse_clarifying_questions(text: str) -> list[dict]:
+    """Extract JSON clarifying_question blocks embedded in text."""
+    questions = []
+    # Find all JSON objects in the text
+    for match in re.finditer(r'\{[^{}]*"type"\s*:\s*"clarifying_question"[^{}]*\}', text):
+        try:
+            parsed = json.loads(match.group())
+            if "question" in parsed and "options" in parsed:
+                questions.append(parsed)
+        except (json.JSONDecodeError, KeyError):
+            continue
+    return questions
+
+
+def strip_json_blocks(text: str) -> str:
+    """Remove JSON clarifying_question blocks from text, leaving only prose."""
+    cleaned = re.sub(r'\{[^{}]*"type"\s*:\s*"clarifying_question"[^{}]*\}', '', text)
+    # Clean up extra blank lines
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+    return cleaned
+
+
 def render_text_with_options(content: str, msg_idx: int, key_prefix: str):
-    """Render agent text. If bullet options are detected, show them as clickable buttons."""
+    """Render agent text. Detects inline JSON questions and bullet options, renders as buttons."""
+
+    # 1. Check for JSON clarifying questions embedded in text
+    questions = parse_clarifying_questions(content)
+    if questions:
+        # Show the prose text (without JSON blocks)
+        prose = strip_json_blocks(content)
+        if prose:
+            st.markdown(prose)
+
+        # Render each question as a card with buttons
+        for q_idx, q in enumerate(questions):
+            question_text = q["question"]
+            options = q["options"]
+            st.markdown(f"**{question_text}**")
+            cols = st.columns(min(len(options), 3))
+            for i, opt in enumerate(options):
+                with cols[i % min(len(options), 3)]:
+                    btn_key = f"{key_prefix}_q{msg_idx}_{q_idx}_{i}"
+                    if st.button(opt, key=btn_key, use_container_width=True):
+                        st.session_state.button_answer = opt
+            st.markdown("")  # spacing
+        return True
+
+    # 2. Check for bullet-point options
     options = extract_clickable_options(content)
 
-    # Always show the full text
+    # Show the full text
     st.markdown(content)
 
-    # If we found clickable options, render them as buttons below
+    # Render bullet options as buttons
     if options and len(options) >= 2:
         st.markdown("---")
         st.caption("**Quick replies** (click to answer, or type your own below)")
-        # Show buttons in rows of 2
         for row_start in range(0, len(options), 2):
             row_options = options[row_start:row_start + 2]
             cols = st.columns(len(row_options))
@@ -81,9 +119,9 @@ def render_text_with_options(content: str, msg_idx: int, key_prefix: str):
                     btn_key = f"{key_prefix}_{msg_idx}_{row_start + i}"
                     if st.button(opt, key=btn_key, use_container_width=True):
                         st.session_state.button_answer = opt
+        return True
 
-        return True  # had options
-    return False  # no options
+    return False
 
 
 # ---------------------------------------------------------------------------
